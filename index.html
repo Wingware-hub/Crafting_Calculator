@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Craft Calculator</title>
+<style>
+  :root {
+    --bg: #12141a;
+    --panel: #1c1f28;
+    --panel2: #242834;
+    --border: #343a4a;
+    --text: #e6e9ef;
+    --muted: #9aa1b2;
+    --accent: #6d4aff;
+    --good: #3ec97e;
+    --warn: #e6b455;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text);
+  }
+  h1 { font-size: 1.5rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 24px; font-size: .9rem; }
+  .grid { display: grid; grid-template-columns: 340px 1fr; gap: 20px; max-width: 1100px; }
+  @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px;
+  }
+  .panel h2 { font-size: 1rem; margin: 0 0 12px; color: var(--accent); }
+  label { display: block; font-size: .85rem; color: var(--muted); margin: 12px 0 4px; }
+  select, input[type=number] {
+    width: 100%; background: var(--panel2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 8px;
+    font-size: .95rem;
+  }
+  button {
+    background: var(--accent); color: #fff; border: none; border-radius: 6px;
+    padding: 9px 14px; font-size: .95rem; cursor: pointer; margin-top: 12px;
+  }
+  button:hover { filter: brightness(1.15); }
+  .buy-toggle { margin-top: 10px; border-top: 1px dashed var(--border); padding-top: 8px; }
+  .buy-toggle .chk { display: flex; align-items: center; gap: 6px; font-size: .85rem; padding: 2px 0; }
+  .buy-toggle .chk input { accent-color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: .92rem; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; font-size: .82rem; text-transform: uppercase; letter-spacing: .04em; }
+  td.num, th.num { text-align: right; }
+  tr:last-child td { border-bottom: none; }
+  .total-row td { font-weight: 700; color: var(--good); border-top: 2px solid var(--border); }
+  .empty { color: var(--muted); font-style: italic; }
+  .steps li { padding: 4px 0; }
+  .steps { margin: 8px 0 0 18px; padding: 0; font-size: .92rem; line-height: 1.5; }
+  .steps .depth-0::marker { color: var(--accent); }
+</style>
+</head>
+<body>
+<h1>Craft Calculator</h1>
+<p class="sub">Pick what you want to craft, enter how many, get the full shopping list and crafting order.</p>
+
+<div class="grid">
+  <!-- LEFT: inputs -->
+  <div>
+    <div class="panel">
+      <h2>Calculate</h2>
+
+      <label for="item">End product</label>
+      <select id="item"></select>
+
+      <label for="qty">How many</label>
+      <input type="number" id="qty" value="1" min="1" step="1">
+
+      <button id="go">Calculate</button>
+
+      <div class="buy-toggle" id="buyToggle">
+        <label style="margin-top:0">Buy these instead of crafting:</label>
+        <div id="buyList"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT: results -->
+  <div>
+    <div class="panel">
+      <h2>Shopping list (raw materials)</h2>
+      <div id="needsOut"></div>
+    </div>
+
+    <div class="panel" style="margin-top:20px">
+      <h2>Crafting steps</h2>
+      <div id="stepsOut"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ============================================================
+//  EDIT RECIPES HERE — this is the only place they are defined.
+//  Format: "Item name": { "time": seconds per craft, "ingredients": { "Ingredient": amount } }
+//  Items that don't appear as a recipe are treated as raw materials.
+// ============================================================
+const RECIPES = {
+  "Lockpick": {
+    "time": 5,
+    "ingredients": { "Metal Scrap": 3, "Screwdriver": 1 }
+  },
+  "Advanced Lockpick": {
+    "time": 15,
+    "ingredients": { "Lockpick": 2, "Metal Scrap": 5, "Plastic": 2 }
+  },
+  "Repair Kit": {
+    "time": 20,
+    "ingredients": { "Metal Scrap": 8, "Tool Box": 1, "Duct Tape": 2 }
+  },
+  "Armor Plate": {
+    "time": 30,
+    "ingredients": { "Steel": 4, "Ceramic": 2, "Fabric": 3 }
+  },
+  "Bandage": {
+    "time": 8,
+    "ingredients": { "Cloth": 2, "Alcohol": 1 }
+  }
+};
+// ============================================================
+
+const recipes = RECIPES;
+const buyInstead = new Set(); // per-user preference: craftable items they prefer to buy
+
+// ===================== CORE LOGIC =====================
+// Walks the recipe tree for one end product.
+// Raw ingredients (no recipe) are accumulated in `needs`.
+// Steps are collected bottom-up, so intermediate items are crafted before the things that need them.
+function calculate(rootItem, rootQty) {
+  const needs = {};
+  const steps = [];
+  const stack = []; // guards against circular recipes (A needs B, B needs A...)
+
+  function visit(item, qty) {
+    const r = recipes[item];
+    if (!r || buyInstead.has(item)) {
+      needs[item] = (needs[item] || 0) + qty;
+      return;
+    }
+    if (stack.includes(item)) {
+      throw new Error("Circular recipe detected involving: " + item);
+    }
+    stack.push(item);
+    for (const [ing, amount] of Object.entries(r.ingredients || {})) {
+      visit(ing, qty * amount);
+    }
+    stack.pop();
+    steps.push({ item: item, qty: qty, time: (r.time || 0) * qty });
+  }
+
+  visit(rootItem, rootQty);
+
+  const totalTime = steps.reduce(function (sum, s) { return sum + s.time; }, 0);
+  return { needs: needs, steps: steps, totalTime: totalTime };
+}
+
+// ===================== UI HELPERS =====================
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+  });
+}
+
+function fmtTime(sec) {
+  if (sec >= 3600) {
+    const h = Math.floor(sec / 3600), m = Math.round((sec % 3600) / 60);
+    return h + "h " + (m ? m + "m" : "");
+  }
+  if (sec >= 60) {
+    const m = Math.floor(sec / 60), s = sec % 60;
+    return m + "m " + (s ? s + "s" : "");
+  }
+  return sec + "s";
+}
+
+function refreshDropdowns() {
+  const sel = document.getElementById("item");
+  const items = Object.keys(recipes).sort();
+  sel.innerHTML = "";
+  items.forEach(function (name) {
+    const opt = document.createElement("option");
+    opt.value = name; opt.textContent = name;
+    sel.appendChild(opt);
+  });
+
+  // checkboxes for "buy instead of craft"
+  const buyList = document.getElementById("buyList");
+  buyList.innerHTML = "";
+  items.forEach(function (name) {
+    const lab = document.createElement("label");
+    lab.className = "chk";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = buyInstead.has(name);
+    cb.addEventListener("change", function () {
+      if (cb.checked) buyInstead.add(name); else buyInstead.delete(name);
+    });
+    lab.appendChild(cb);
+    lab.appendChild(document.createTextNode(name));
+    buyList.appendChild(lab);
+  });
+}
+
+function showError(msg) {
+  document.getElementById("stepsOut").innerHTML = "";
+  document.getElementById("needsOut").innerHTML =
+    '<div class="error">' + esc(msg) + "</div>";
+}
+
+function runCalculation() {
+  const item = document.getElementById("item").value;
+  const qty = parseInt(document.getElementById("qty").value, 10) || 1;
+
+  let result;
+  try {
+    result = calculate(item, qty);
+  } catch (e) {
+    showError(e.message);
+    return;
+  }
+
+  // --- shopping list ---
+  const needsNames = Object.keys(result.needs).sort();
+  let html = "";
+  if (needsNames.length === 0) {
+    html = '<p class="empty">Nothing to gather — everything is crafted from nothing? Check your recipes.</p>';
+  } else {
+    html += "<table><thead><tr><th>Material</th><th class='num'>Amount</th></tr></thead><tbody>";
+    needsNames.forEach(function (n) {
+      html += "<tr><td>" + esc(n) + "</td><td class='num'>" + result.needs[n] + "</td></tr>";
+    });
+    html += "</tbody></table>";
+  }
+  document.getElementById("needsOut").innerHTML = html;
+
+  // --- steps ---
+  if (result.steps.length === 0) {
+    document.getElementById("stepsOut").innerHTML =
+      '<p class="empty">"' + esc(item) + '" has no recipe — it counts as a raw material.</p>';
+  } else {
+    html = "<ol class='steps'>";
+    result.steps.forEach(function (s) {
+      html += "<li>Craft <strong>" + esc(s.item) + "</strong> &times; " + s.qty +
+              " <span style='color:var(--muted)'>(" + fmtTime(s.time) + ")</span></li>";
+    });
+    html += "</ol><table><tfoot><tr class='total-row'><td>Total crafting time (sequential)</td><td class='num'>" +
+            fmtTime(result.totalTime) + "</td></tr></tfoot></table>";
+    document.getElementById("stepsOut").innerHTML = html;
+  }
+}
+
+// ===================== WIRING =====================
+refreshDropdowns();
+document.getElementById("go").addEventListener("click", runCalculation);
+document.getElementById("qty").addEventListener("keydown", function (e) {
+  if (e.key === "Enter") runCalculation();
+});
+</script>
+</body>
+</html>
